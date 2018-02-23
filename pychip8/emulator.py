@@ -1,8 +1,9 @@
+import sys
 import random
 import pygame
 
 
-class chip8:
+class Chip8:
     # Chip 8 has 35 opcodes
     # All of which are two bytes long
     _opcode = None
@@ -60,14 +61,44 @@ class chip8:
             rom_binary = f.read()
             self.init_chip8(rom_binary)
 
-    def reset(self):        
+    def reset(self):
         with open(self.rom_loc, 'rb') as f:
             rom_binary = f.read()
             self.init_chip8(rom_binary)
 
+    def run(self):
+        while True:
+            for e in pygame.event.get():
+                if e.type == pygame.QUIT:
+                    sys.exit()
+                
+            state = pygame.key.get_pressed()
+
+            # The input keys are mapped to the original keypad layout:
+            # 123C
+            # 456D
+            # 789E
+            # A0BF
+            self._keys = [
+                state[pygame.K_x], state[pygame.K_1], state[pygame.K_2], state[pygame.K_3],
+                state[pygame.K_q], state[pygame.K_w], state[pygame.K_e], state[pygame.K_a],
+                state[pygame.K_s], state[pygame.K_d], state[pygame.K_z], state[pygame.K_c],
+                state[pygame.K_4], state[pygame.K_r], state[pygame.K_f], state[pygame.K_v]
+            ]
+
+            # Emulate cycle
+            self.emulate_cycle()
+
+            # Display
+            scaled_surface = pygame.transform.scale(self._pygame_screen_surface, (512, 256))
+
+            self._pygame_window.blit(scaled_surface, (0, 0))
+
+            pygame.display.flip()
+
     def init_chip8(self, rom_binary):
         # Init pygame
-        pygame.init()        
+        pygame.init()
 
         self._pygame_window = pygame.display.set_mode((512, 256))
         self._pygame_screen_surface = pygame.Surface((64, 32))
@@ -255,7 +286,7 @@ class chip8:
 
             for row in range(n):
                 for col in range(8):
-                    pixel = self._memory[self._i + row]
+                    pixel = self._memory[int(self._i) + row]
 
                     if pixel & (0x80 >> col) != 0:
                         # By applying a modulo operation positions outiside the screen will be
@@ -275,11 +306,61 @@ class chip8:
                 # EX9E	Skips the next instruction if the key stored in VX is pressed. (Usually the next instruction is a jump to skip a code block)
                 if self._key[self._v[(self._opcode & 0x0F00) >> 8]] == 1:
                     self._pc = self._pc + 2
-            
+
             elif self._opcode & 0x00FF == 0x00A1:
                 # EXA1: Skip next instruction if key VX is not pressed
                 if self._key[self._v[(self._opcode & 0x0F00) >> 8]] == 0:
                     self._pc = self._pc + 2
+
+        elif opcode_buffer == 0xF000:
+            opcode_buffer_inner = self._opcode & 0x00FF
+
+            if opcode_buffer_inner == 0x0007:
+                # FX07 Sets VX to the value of the delay timer.
+                self._v[(self._opcode & 0x0F00) >> 8] = self._delay_timer
+
+            elif opcode_buffer_inner == 0x000A:
+                # FX0A	A key press is awaited, and then stored in VX. (Blocking Operation. All instruction halted until next key event)                
+                pressed = False
+
+                for i in range(len(self._key)):
+                    if self._key[i] == 1:
+                        self._v[(self._opcode & 0x0F00) >> 8] = i
+                        pressed = True
+
+            elif opcode_buffer_inner == 0x0015:
+                # FX15	Timer	delay_timer(Vx)	Sets the delay timer to VX.
+                self._delay_timer = self._v[(self._opcode & 0x0F00) >> 8]
+            
+            elif opcode_buffer_inner == 0x0018:
+                # FX18	Sound	sound_timer(Vx)	Sets the sound timer to VX.
+                self._sound_timer = self._v[(self._opcode & 0x0F00) >> 8]
+            
+            elif opcode_buffer_inner == 0x001E:
+                # FX1E	MEM	I +=Vx	Adds VX to I
+                self._i = self._i + self._v[(self._opcode & 0x0F00) >> 8]
+
+            elif opcode_buffer_inner == 0x0029:
+                # FX29	MEM	I=sprite_addr[Vx]	Sets I to the location of the sprite for the character in VX. Characters 0-F (in hexadecimal) are represented by a 4x5 font.
+                self._i = self._v[(self._opcode & 0x0F00) >> 8] * 5
+            
+            elif opcode_buffer_inner == 0x0033:
+                # FX33: Store the binary coded decimal representation of VX in memory
+                # starting at location I
+                # (In other words, take the decimal representation of VX, place the hundreds digit in memory at location in I, the tens digit at location I+1, and the ones digit at location I+2.)
+                self._memory[self._i] = self._v[(self._opcode & 0x0F00) >> 8] / 100
+                self._memory[self._i+1] = (self._v[(self._opcode & 0x0F00) >> 8] / 10) % 10
+                self._memory[self._i+2] = (self._v[(self._opcode & 0x0F00) >> 8] % 100) % 10
+
+            elif opcode_buffer_inner == 0x0055:
+                # FX55: Store registers V0 to VX in memory starting at I
+                for i in range(((self._opcode & 0x0F00) >> 8) + 1):
+                    self._memory[self._i + i] = self._v[i]
+
+            elif opcode_buffer_inner == 0x0065:
+                # FX65: Fills V0 to VX (including VX) with values from memory starting at address I. I is increased by 1 for each value written.
+                for i in range(((self._opcode & 0x0F00) >> 8) + 1):
+                    self._v[i] = self._memory[self._i + i]
 
         else:
             print('Unknown Opcode: 0x{:04X}'.format(opcode_buffer))
@@ -288,3 +369,10 @@ class chip8:
 
         if self._delay_timer > 0:
             self._delay_timer = self._delay_timer - 1
+        
+        if self._sound_timer > 0:
+            self._sound_timer = self._sound_timer - 1
+
+        if self._sound_timer == 0:
+            # BEEP
+            pass
